@@ -1,30 +1,121 @@
 <?php
 
 /*
- * This file is part of Composer.
+ * PharOut, (c) 2014 Sam Minnée, <sam@silverstripe.com>
  *
- * (c) Nils Adermann <naderman@naderman.de>
- *     Jordi Boggiano <j.boggiano@seld.be>
+ * Based on the Compiler script included with Composer.
+ * (c) Nils Adermann <naderman@naderman.de> Jordi Boggiano <j.boggiano@seld.be>
  *
  * For the full copyright and license information, please view the LICENSE
  * file that was distributed with this source code.
  */
 
-namespace SilverStripe\Deploynaut\Console;
+namespace SilverStripe\PharOut;
 
 use Symfony\Component\Finder\Finder;
-//use Symfony\Component\Process\Process;
 
 /**
- * The Compiler class compiles composer into a phar
- *
- * @author Fabien Potencier <fabien@symfony.com>
- * @author Jordi Boggiano <j.boggiano@seld.be>
+ * Compiler class for creating executable phar archives of PHP CLI projects.
+ * Designed to be used with Composer projects.
  */
-class Compiler
-{
-    private $version;
-    private $versionDate;
+class Compiler {
+    protected $projectPath;
+
+    protected $binFile;
+
+    protected $composerPackages = array();
+
+    protected $sourcePaths = array();
+
+    protected $prefixMessage = "";
+
+    /**
+     * Set the path of your project, in a fluent syntax.
+     * All other paths are relative to this path
+     */
+    public function forProjectAt($projectPath) {
+        if(substr($projectPath,-1) != '/') $projectPath .= '/';
+        $this->projectPath = $projectPath;
+
+        return $this;
+    }
+
+    /**
+     * Set the relative path of your project's executable, in a fluent syntax
+     */
+    public function withExecutable($binFile) {
+        $this->binFile = $binFile;
+    
+        return $this;
+    }
+
+    /**
+     * Set a message that is included as a comment at the start of the phar file.
+     * This might be a copyright notice, for example.
+     */
+    public function withInternalMessage($prefixMessage) {
+        $this->prefixMessage = $prefixMessage;
+
+        return $this;
+    }
+
+    /**
+     * Add an array of composer packages, specified as strings of the form "myvendor/mypackage".
+     * Note that this will only work if packages are installed in their default locations.
+     */
+    public function withComposerPackages($packages) {
+        $this->composerPackages = array_merge($this->composerPackages, $packages);
+ 
+         return $this;
+   }
+
+    /**
+     * Add a single composer package
+     */
+    public function withComposerPackage($package) {
+        $this->composerPackages[] = $package;
+ 
+         return $this;
+   }
+
+    /**
+     * Add an array of source paths, specified relative to the project path
+     */
+    public function withSourcePaths($paths, $type = "*.php") {
+        foreach($paths as $path) {
+            $this->addSourcePath($path, $type);
+        }
+        
+        return $this;
+    }
+
+    /**
+     * Add a single source path.
+     */
+    public function withSourcePath($path, $type = "*.php") {
+        $this->sourcePaths[] = array($path, $type);
+
+        return $this;
+    }
+
+    /**
+     * Calls compile, handling errors and output more appropriate for a compile script.
+     * Displays errors, catches exceptions, and halts with an exit code of 1 if an exception
+     * is thrown.
+     */
+    public function writePhar($pharFile) {
+        error_reporting(-1);
+        ini_set('display_errors', 1);
+
+        try {
+            $this->compile($pharFile);
+        } catch (\Exception $e) {
+            echo 'Failed to compile phar: ['.get_class($e).'] '.$e->getMessage().' at '.$e->getFile().':'.$e->getLine();
+            exit(1);
+        }
+    }
+
+
 
     /**
      * Compiles composer into a single phar file
@@ -32,9 +123,16 @@ class Compiler
      * @throws \RuntimeException
      * @param  string            $pharFile The full path to the file to create
      */
-    public function compile($pharFile, $baseDir, $binFile) {
-        if(!$pharFile) throw new \LogicException("Please define output phar file");
+    public function compile($pharFile) {
+        if(!$pharFile) {
+            throw new \LogicException("Please define output phar file");
+        }
 
+        if(!$this->projectPath || !$this->binFile) {
+            throw new \LogicException("Please set your binFile and projectPath");
+        }
+
+        // Remove previous phar, if it exists
         if (file_exists($pharFile)) {
             unlink($pharFile);
         }
@@ -44,78 +142,69 @@ class Compiler
 
         $phar->startBuffering();
 
-        // Add source 
-        $finder = new Finder();
-        $finder->files()
-            ->ignoreVCS(true)
-            ->name('*.php')
-            ->notName('Compiler.php')
-            ->in($baseDir.'src')
-        ;
+        // Add project sources
+        foreach($this->sourcePaths as $info) {
+            list($path, $type) = $info;
+            $finder = new Finder();
+            $finder->files()
+                ->ignoreVCS(true)
+                ->name($type)
+                ->in($this->projectPath.$path)
+            ;
 
-        foreach ($finder as $file) {
-            $this->addFile($phar, $file, $baseDir);
+            foreach ($finder as $file) {
+                $this->addFile($phar, $file);
+            }
         }
-//        $this->addFile($phar, new \SplFileInfo(__DIR__ . '/Autoload/ClassLoader.php'), false);
-/*
-        $finder = new Finder();
-        $finder->files()
-            ->name('*.json')
-            ->in(__DIR__ . '/../../res')
-        ;
-*/
-        foreach ($finder as $file) {
-            $this->addFile($phar, $file, $baseDir, false);
-        }
-
-        $composerPackages = array(
-            'symfony/console',
-            'curl/curl',
-        );
 
         // Add composer packges
-        foreach($composerPackages as $package) {
+        foreach($this->composerPackages as $package) {
             $finder = new Finder();
             $finder->files()
                 ->ignoreVCS(true)
                 ->name('*.php')
                 ->exclude('Tests')
-                ->in($baseDir.'/vendor/' . $package)
+                ->in($this->projectPath.'vendor/' . $package)
             ;
+
+            foreach ($finder as $file) {
+                $this->addFile($phar, $file);
+            }
         }
 
-        foreach ($finder as $file) {
-            $this->addFile($phar, $file, $baseDir);
+        // Add composer autoloader
+        $loaderFiles = array(
+            'vendor/autoload.php',
+            'vendor/composer/autoload_namespaces.php',
+            'vendor/composer/autoload_psr4.php',
+            'vendor/composer/autoload_classmap.php',
+            'vendor/composer/autoload_real.php',
+            'vendor/composer/ClassLoader.php',
+        );
+        if (file_exists($this->projectPath.'vendor/composer/include_paths.php')) {
+            $loaderFiles[] = 'vendor/composer/include_paths.php';
+        }
+        foreach($loaderFiles as $loaderFile) {
+            $this->addFile($phar, new \SplFileInfo($this->projectPath.$loaderFile));
         }
 
-        $this->addFile($phar, new \SplFileInfo($baseDir.'/vendor/autoload.php'), $baseDir);
-        $this->addFile($phar, new \SplFileInfo($baseDir.'/vendor/composer/autoload_namespaces.php'), $baseDir);
-        $this->addFile($phar, new \SplFileInfo($baseDir.'/vendor/composer/autoload_psr4.php'), $baseDir);
-        $this->addFile($phar, new \SplFileInfo($baseDir.'/vendor/composer/autoload_classmap.php'), $baseDir);
-        $this->addFile($phar, new \SplFileInfo($baseDir.'/vendor/composer/autoload_real.php'), $baseDir);
-        if (file_exists($baseDir.'/vendor/composer/include_paths.php')) {
-            $this->addFile($phar, new \SplFileInfo($baseDir.'/vendor/composer/include_paths.php'), $baseDir);
-        }
-        $this->addFile($phar, new \SplFileInfo($baseDir.'/vendor/composer/ClassLoader.php'), $baseDir);
+        // Add the binary, set it as the executable part of the phar
+        $this->addBinFile($phar, $this->binFile);
+        $phar->setStub($this->getStub(basename($pharFile), $this->binFile));
 
-        $this->addComposerBin($phar, $binFile, $baseDir);
-
-        // Stubs
-        $phar->setStub($this->getStub(basename($pharFile), $binFile));
-
+        // Finish!
         $phar->stopBuffering();
 
-        // disabled for interoperability with systems without gzip ext
-        // $phar->compressFiles(\Phar::GZ);
-
-        //$this->addFile($phar, new \SplFileInfo(__DIR__.'/../../LICENSE'), false);
+        // Add a license file, if it exists
+        if(file_exists($this->projectPath . 'LICENSE')) {
+            $this->addFile($phar, new \SplFileInfo($this->projectPath . 'LICENSE'), false);  
+        }
 
         unset($phar);
     }
 
-    private function addFile($phar, $file, $baseDir, $strip = true)
-    {
-        $path = strtr(str_replace($baseDir, '', $file->getRealPath()), '\\', '/');
+    private function addFile($phar, $file, $strip = true) {
+        $path = strtr(str_replace($this->projectPath, '', $file->getRealPath()), '\\', '/');
         echo "Adding $path...\n";
 
         $content = file_get_contents($file);
@@ -125,18 +214,11 @@ class Compiler
             $content = "\n".$content."\n";
         }
 
-/*
-        if ($path === 'src/Composer/Composer.php') {
-            $content = str_replace('@package_version@', $this->version, $content);
-            $content = str_replace('@release_date@', $this->versionDate, $content);
-        }
-*/
         $phar->addFromString($path, $content);
     }
 
-    private function addComposerBin($phar, $binFile, $baseDir)
-    {
-        $content = file_get_contents($baseDir.'/'.$binFile);
+    private function addBinFile($phar, $binFile) {
+        $content = file_get_contents($this->projectPath.'/'.$binFile);
         $content = preg_replace('{^#!/usr/bin/env php\s*}', '', $content);
         $phar->addFromString($binFile, $content);
     }
@@ -147,8 +229,7 @@ class Compiler
      * @param  string $source A PHP string
      * @return string The PHP string with the whitespace removed
      */
-    private function stripWhitespace($source)
-    {
+    private function stripWhitespace($source) {
         if (!function_exists('token_get_all')) {
             return $source;
         }
@@ -175,27 +256,23 @@ class Compiler
         return $output;
     }
 
-    private function getStub($pharName, $binFile)
-    {
+    private function getStub($pharName) {
+        $comment = "";
+        if($this->prefixMessage) {
+            $comment = "/*\n * " . str_replace("\n", "\n * ", trim($this->prefixMessage)) . "\n */";
+        }
+
         $stub = <<<EOF
 #!/usr/bin/env php
 <?php
-/*
- * This file is part of Composer.
- *
- * (c) Nils Adermann <naderman@naderman.de>
- *     Jordi Boggiano <j.boggiano@seld.be>
- *
- * For the full copyright and license information, please view
- * the license that is located at the bottom of this file.
- */
+$comment
 
 Phar::mapPhar('$pharName');
 
 EOF;
 
         return $stub . <<<EOF
-require 'phar://$pharName/$binFile';
+require 'phar://$pharName/$this->binFile';
 
 __HALT_COMPILER();
 EOF;
