@@ -104,6 +104,8 @@ class Compiler {
      * is thrown.
      */
     public function writePhar($pharFile) {
+        if($pharFile[0] != '/') $pharFile = $this->projectPath . $pharFile;
+
         error_reporting(-1);
         ini_set('display_errors', 1);
 

@@ -54,3 +54,6 @@ Use the following code as a starting point for creating your bin/compile file. I
 
     $compiler->writePhar("mytool.phar");
 
+Now, you can run `./bin/compile` from your project root, and `mytool.phar` will be created or replaced.
+
+Happy packaging!
